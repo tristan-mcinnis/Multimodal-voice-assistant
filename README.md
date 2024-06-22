@@ -1,6 +1,6 @@
 # Multi-Modal AI Voice Assistant
 
-This project is a multi-modal AI voice assistant that uses OpenAI's GPT-4, audio processing with WhisperModel, speech recognition, clipboard extraction, and image processing to respond to user prompts.
+This project is a multi-modal AI voice assistant that uses OpenAI's GPT-4o, audio processing with WhisperModel, speech recognition, clipboard extraction, and image processing to respond to user prompts.
 
 ## Installation
 
