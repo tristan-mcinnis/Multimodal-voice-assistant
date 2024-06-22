@@ -8,7 +8,7 @@ To install the required dependencies, follow these steps:
 
 1. Clone the repository:
     ```bash
-    git clone [https://github.com/nexuslux/multimodal-voice-assistant.git](https://github.com/nexuslux/Multimodal-voice-assistant)
+    git clone https://github.com/nexuslux/Multimodal-voice-assistant
     cd multimodal-voice-assistant
     ```
 
