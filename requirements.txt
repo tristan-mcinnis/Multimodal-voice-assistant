@@ -1,0 +1,12 @@
+openai
+Pillow
+faster-whisper
+SpeechRecognition
+pyperclip
+opencv-python-headless
+pyaudio
+rich
+pygame
+duckduckgo-search
+scikit-learn
+numpy
