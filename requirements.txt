@@ -10,3 +10,4 @@ pygame
 duckduckgo-search
 scikit-learn
 numpy
+kokoro-tts

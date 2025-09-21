@@ -4,7 +4,11 @@ import base64
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -45,6 +49,15 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable is required to run the assistant.")
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Text-to-speech configuration
+TTS_PROVIDER = os.getenv("ASSISTANT_TTS_PROVIDER", "openai").strip().lower()
+KOKORO_CLI_PATH = os.getenv("KOKORO_CLI_PATH", "kokoro-tts").strip() or "kokoro-tts"
+KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_sarah")
+KOKORO_LANGUAGE = os.getenv("KOKORO_LANGUAGE", "en-us")
+KOKORO_SPEED = os.getenv("KOKORO_SPEED", "1.0")
+KOKORO_MODEL_PATH = (os.getenv("KOKORO_MODEL_PATH") or "").strip()
+KOKORO_VOICES_PATH = (os.getenv("KOKORO_VOICES_PATH") or "").strip()
 
 # System message for GPT models
 sys_msg = (
@@ -658,21 +671,173 @@ def llm_prompt(prompt: str, img_context: Optional[str]) -> str:
     return response_text
 
 
-def speak(text: str) -> None:
+def _play_wav_file(audio_path: Path) -> None:
     player = pyaudio.PyAudio()
-    player_stream = player.open(format=pyaudio.paInt16, channels=1, rate=24000, output=True)
-    stream_started = False
-    with openai_client.audio.speech.with_streaming_response.create(
-        model="tts-1", voice="nova", response_format="pcm", speed="1.75", input=text
-    ) as response:
-        silence_threshold = 0.01
-        for chunk in response.iter_bytes(chunk_size=1024):
-            if stream_started:
-                player_stream.write(chunk)
-            else:
-                if chunk and max(chunk) > silence_threshold:
-                    player_stream.write(chunk)
-                    stream_started = True
+    stream = None
+    try:
+        with wave.open(str(audio_path), "rb") as wav_file:
+            stream = player.open(
+                format=player.get_format_from_width(wav_file.getsampwidth()),
+                channels=wav_file.getnchannels(),
+                rate=wav_file.getframerate(),
+                output=True,
+            )
+            data = wav_file.readframes(1024)
+            while data:
+                stream.write(data)
+                data = wav_file.readframes(1024)
+    finally:
+        if stream is not None:
+            stream.stop_stream()
+            stream.close()
+        player.terminate()
+
+
+def speak_with_openai(text: str) -> bool:
+    player = pyaudio.PyAudio()
+    stream = None
+    try:
+        stream = player.open(format=pyaudio.paInt16, channels=1, rate=24000, output=True)
+        stream_started = False
+        try:
+            with openai_client.audio.speech.with_streaming_response.create(
+                model="tts-1", voice="nova", response_format="pcm", speed="1.75", input=text
+            ) as response:
+                silence_threshold = 0.01
+                for chunk in response.iter_bytes(chunk_size=1024):
+                    if stream_started:
+                        stream.write(chunk)
+                    else:
+                        if chunk and max(chunk) > silence_threshold:
+                            stream.write(chunk)
+                            stream_started = True
+        except Exception as exc:  # noqa: BLE001 - surface TTS errors gracefully
+            log(f"OpenAI TTS failed: {exc}", title="TTS", style="bold red")
+            return False
+        return True
+    finally:
+        if stream is not None:
+            stream.stop_stream()
+            stream.close()
+        player.terminate()
+
+
+def speak_with_kokoro(text: str) -> bool:
+    kokoro_executable = shutil.which(KOKORO_CLI_PATH)
+    if not kokoro_executable:
+        log(
+            f"Kokoro CLI '{KOKORO_CLI_PATH}' not found. Install kokoro-tts and ensure it is on your PATH.",
+            title="TTS",
+            style="bold yellow",
+        )
+        return False
+
+    voice = (KOKORO_VOICE or "af_sarah").strip() or "af_sarah"
+    language = (KOKORO_LANGUAGE or "en-us").strip() or "en-us"
+    speed_value = (KOKORO_SPEED or "1.0").strip() or "1.0"
+    try:
+        float(speed_value)
+    except ValueError:
+        log(
+            f"Invalid KOKORO_SPEED '{speed_value}'. Falling back to 1.0.",
+            title="TTS",
+            style="bold yellow",
+        )
+        speed_value = "1.0"
+
+    fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    audio_path = Path(temp_audio_path)
+
+    command = [
+        kokoro_executable,
+        "-",
+        str(audio_path),
+        "--format",
+        "wav",
+        "--lang",
+        language,
+        "--voice",
+        voice,
+        "--speed",
+        speed_value,
+    ]
+
+    model_path = KOKORO_MODEL_PATH
+    if model_path:
+        command.extend(["--model", model_path])
+
+    voices_path = KOKORO_VOICES_PATH
+    if voices_path:
+        command.extend(["--voices", voices_path])
+
+    log(
+        f"Generating speech with Kokoro CLI voice '{voice}' ({language}).",
+        title="TTS",
+        style="bold blue",
+    )
+
+    try:
+        result = subprocess.run(
+            command,
+            input=text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface CLI errors gracefully
+        log(f"Failed to run Kokoro CLI: {exc}", title="TTS", style="bold red")
+        audio_path.unlink(missing_ok=True)
+        return False
+
+    if result.returncode != 0:
+        error_output = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+        log(
+            f"Kokoro CLI exited with status {result.returncode}: {error_output}",
+            title="TTS",
+            style="bold red",
+        )
+        audio_path.unlink(missing_ok=True)
+        return False
+
+    if not audio_path.exists():
+        log("Kokoro CLI did not produce an audio file.", title="TTS", style="bold red")
+        return False
+
+    try:
+        _play_wav_file(audio_path)
+    except Exception as exc:  # noqa: BLE001 - playback errors should be surfaced
+        log(f"Failed to play Kokoro audio output: {exc}", title="TTS", style="bold red")
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    try:
+        audio_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
+def speak(text: str) -> None:
+    provider = TTS_PROVIDER if TTS_PROVIDER in {"openai", "kokoro"} else "openai"
+    if provider != TTS_PROVIDER:
+        log(
+            f"Unknown TTS provider '{TTS_PROVIDER}'. Falling back to OpenAI.",
+            title="TTS",
+            style="bold yellow",
+        )
+
+    if provider == "kokoro":
+        if speak_with_kokoro(text):
+            return
+        log("Falling back to OpenAI TTS.", title="TTS", style="bold yellow")
+
+    if not speak_with_openai(text):
+        log("Unable to synthesise speech for the assistant response.", title="TTS", style="bold red")
 
 
 def wav_to_text(audio_path: str) -> str:
