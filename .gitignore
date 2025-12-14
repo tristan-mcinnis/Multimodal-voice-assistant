@@ -20,6 +20,11 @@ logs/
 # Data directory
 data/
 
+# Model files (large binary files)
+models/
+*.onnx
+*.bin
+
 # IDE
 .idea/
 .vscode/

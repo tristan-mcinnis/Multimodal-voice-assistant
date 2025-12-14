@@ -45,8 +45,9 @@ python run.py
 ```bash
 # 1. Start LM Studio and load a model
 # 2. Download Kokoro TTS models (one-time, ~335MB)
-curl -L -o kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
-curl -L -o voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
+mkdir -p models
+curl -L -o models/kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
+curl -L -o models/voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
 
 # 3. Run the assistant
 python run.py
@@ -139,29 +140,23 @@ self.tool_registry.register(
 
 ## Kokoro TTS Setup
 
-For offline text-to-speech, you need to download the model files (~335MB total):
+For offline text-to-speech, download the model files (~335MB total) to the `models/` directory:
 
 ```bash
-# Download model files to the project directory
-curl -L -o kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
-curl -L -o voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
+mkdir -p models
+curl -L -o models/kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
+curl -L -o models/voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
 ```
 
-That's it! Kokoro is the default TTS provider and will automatically find these files in the project directory.
+That's it! Kokoro is the default TTS provider and will automatically find these files.
 
 ### Optional: Custom model location
 
 If you prefer to store the models elsewhere:
 
 ```bash
-# Download to a custom location
-mkdir -p ~/kokoro
-curl -L -o ~/kokoro/kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
-curl -L -o ~/kokoro/voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
-
-# Set environment variables to point to your files
-export KOKORO_ONNX_MODEL_PATH=~/kokoro/kokoro-v1.0.onnx
-export KOKORO_VOICES_BIN_PATH=~/kokoro/voices-v1.0.bin
+export KOKORO_ONNX_MODEL_PATH=/path/to/kokoro-v1.0.onnx
+export KOKORO_VOICES_BIN_PATH=/path/to/voices-v1.0.bin
 ```
 
 ### Streaming mode (lower latency)

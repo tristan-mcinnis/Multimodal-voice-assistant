@@ -32,14 +32,27 @@ from ...utils import log
 _kokoro_onnx_instance: Optional[Any] = None
 
 
+def _find_model_file(filename: str) -> str:
+    """Find a model file, checking models/ directory first."""
+    # Check models/ directory first
+    models_path = Path("models") / filename
+    if models_path.exists():
+        return str(models_path)
+    # Fall back to current directory
+    if Path(filename).exists():
+        return filename
+    # Return models/ path as default (will show better error message)
+    return str(models_path)
+
+
 def _get_kokoro_onnx() -> Optional[Any]:
     """Lazy initialization of Kokoro ONNX for streaming TTS."""
     global _kokoro_onnx_instance
     if _kokoro_onnx_instance is None:
         try:
             from kokoro_onnx import Kokoro
-            model_path = KOKORO_ONNX_MODEL_PATH or "kokoro-v1.0.onnx"
-            voices_path = KOKORO_VOICES_BIN_PATH or "voices-v1.0.bin"
+            model_path = KOKORO_ONNX_MODEL_PATH or _find_model_file("kokoro-v1.0.onnx")
+            voices_path = KOKORO_VOICES_BIN_PATH or _find_model_file("voices-v1.0.bin")
             _kokoro_onnx_instance = Kokoro(model_path, voices_path)
             log("Initialized Kokoro ONNX streaming TTS", title="TTS", style="bold blue")
         except Exception as exc:
