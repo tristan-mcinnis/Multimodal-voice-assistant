@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="faster_whisper")
+
 import base64
 import json
 import os
@@ -43,12 +46,19 @@ def log(message: str, title: str, style: str) -> None:
 # Wake word configuration
 wake_word = "nova"
 
-# Initialize OpenAI client using environment configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY environment variable is required to run the assistant.")
+# LLM Provider configuration - supports local (LM Studio) or OpenAI
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local").strip().lower()
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+if LLM_PROVIDER == "local":
+    LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:1234/v1")
+    LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "lm-studio")
+    openai_client = OpenAI(base_url=LOCAL_LLM_BASE_URL, api_key=LOCAL_LLM_API_KEY)
+    log(f"Using local LLM at {LOCAL_LLM_BASE_URL}", title="LLM", style="bold blue")
+else:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY environment variable is required when LLM_PROVIDER=openai")
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Text-to-speech configuration
 TTS_PROVIDER = os.getenv("ASSISTANT_TTS_PROVIDER", "openai").strip().lower()
@@ -58,6 +68,11 @@ KOKORO_LANGUAGE = os.getenv("KOKORO_LANGUAGE", "en-us")
 KOKORO_SPEED = os.getenv("KOKORO_SPEED", "1.0")
 KOKORO_MODEL_PATH = (os.getenv("KOKORO_MODEL_PATH") or "").strip()
 KOKORO_VOICES_PATH = (os.getenv("KOKORO_VOICES_PATH") or "").strip()
+
+# Streaming Kokoro TTS configuration (uses kokoro-onnx for low latency)
+KOKORO_STREAMING = os.getenv("KOKORO_STREAMING", "false").strip().lower() in {"1", "true", "yes"}
+KOKORO_ONNX_MODEL_PATH = os.getenv("KOKORO_ONNX_MODEL_PATH", "").strip()
+KOKORO_VOICES_BIN_PATH = os.getenv("KOKORO_VOICES_BIN_PATH", "").strip()
 
 # System message for GPT models
 sys_msg = (
@@ -203,25 +218,34 @@ class OpenAIModelManager:
         raise RuntimeError(f"All models failed for capability '{capability}'.") from last_error
 
 
-DEFAULT_MODEL_CATALOG = {
-    "conversation": [
-        os.getenv("OPENAI_PREFERRED_CHAT_MODEL", "gpt-5"),
-        "gpt-5-mini",
-        "gpt-5-nano",
-        "gpt-4o",
-    ],
-    "vision": [
-        os.getenv("OPENAI_PREFERRED_VISION_MODEL", "gpt-5"),
-        "gpt-5-mini",
-        "gpt-4o",
-    ],
-    "structured": [
-        os.getenv("OPENAI_PREFERRED_TOOL_MODEL", "gpt-5-mini"),
-        "gpt-5-nano",
-        "gpt-4o-mini",
-        "gpt-4o",
-    ],
-}
+# Model catalog - different for local vs cloud mode
+if LLM_PROVIDER == "local":
+    LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "local-model")
+    DEFAULT_MODEL_CATALOG = {
+        "conversation": [LOCAL_LLM_MODEL],
+        "vision": [],  # Vision not typically supported by local models
+        "structured": [LOCAL_LLM_MODEL],
+    }
+else:
+    DEFAULT_MODEL_CATALOG = {
+        "conversation": [
+            os.getenv("OPENAI_PREFERRED_CHAT_MODEL", "gpt-5"),
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-4o",
+        ],
+        "vision": [
+            os.getenv("OPENAI_PREFERRED_VISION_MODEL", "gpt-5"),
+            "gpt-5-mini",
+            "gpt-4o",
+        ],
+        "structured": [
+            os.getenv("OPENAI_PREFERRED_TOOL_MODEL", "gpt-5-mini"),
+            "gpt-5-nano",
+            "gpt-4o-mini",
+            "gpt-4o",
+        ],
+    }
 
 model_manager = OpenAIModelManager(openai_client, ModelCatalog(DEFAULT_MODEL_CATALOG))
 
@@ -361,6 +385,11 @@ context_provider_registry.register(MCPContextProvider())
 ENABLE_TOOL_CALLING = os.getenv("ASSISTANT_DISABLE_TOOLS", "0").lower() not in {"1", "true", "yes"}
 if not ENABLE_TOOL_CALLING:
     log("Tool calling disabled via ASSISTANT_DISABLE_TOOLS.", title="TOOLS", style="bold yellow")
+
+# Simple tools mode - only clipboard and web search, skip vision-heavy tools
+SIMPLE_TOOLS = os.getenv("ASSISTANT_SIMPLE_TOOLS", "false").strip().lower() in {"1", "true", "yes"}
+if SIMPLE_TOOLS:
+    log("Simple tools mode enabled. Vision tools disabled.", title="TOOLS", style="bold blue")
 
 
 def message_to_dict(message: Any) -> Dict[str, Any]:
@@ -555,42 +584,15 @@ def duckduckgo_search_tool(query: str, max_results: int = 5) -> str:
 
 
 def register_builtin_tools() -> None:
+    # Always register clipboard tool - works locally
     tool_registry.register(
         name="extract_clipboard_text",
         description="Extract the latest textual content from the user's clipboard.",
         parameters={"type": "object", "properties": {}},
         handler=lambda: extract_clipboard_text_tool(),
     )
-    tool_registry.register(
-        name="capture_screenshot_context",
-        description=(
-            "Capture a screenshot on the user's machine (macOS supported) and describe it for additional conversation context."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "user_prompt": {
-                    "type": "string",
-                    "description": "The user's current request to guide the screenshot analysis.",
-                }
-            },
-        },
-        handler=lambda user_prompt="": capture_screenshot_context_tool(user_prompt=user_prompt),
-    )
-    tool_registry.register(
-        name="capture_webcam_context",
-        description="Capture a webcam photo and describe it for additional conversation context.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "user_prompt": {
-                    "type": "string",
-                    "description": "The user's current request to guide the webcam analysis.",
-                }
-            },
-        },
-        handler=lambda user_prompt="": capture_webcam_context_tool(user_prompt=user_prompt),
-    )
+
+    # Always register web search - works locally
     tool_registry.register(
         name="duckduckgo_search",
         description="Perform a DuckDuckGo search and return the most relevant results.",
@@ -612,6 +614,39 @@ def register_builtin_tools() -> None:
         },
         handler=lambda query, max_results=5: duckduckgo_search_tool(query=query, max_results=max_results),
     )
+
+    # Vision-heavy tools - only register if not in simple tools mode
+    if not SIMPLE_TOOLS:
+        tool_registry.register(
+            name="capture_screenshot_context",
+            description=(
+                "Capture a screenshot on the user's machine (macOS supported) and describe it for additional conversation context."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "user_prompt": {
+                        "type": "string",
+                        "description": "The user's current request to guide the screenshot analysis.",
+                    }
+                },
+            },
+            handler=lambda user_prompt="": capture_screenshot_context_tool(user_prompt=user_prompt),
+        )
+        tool_registry.register(
+            name="capture_webcam_context",
+            description="Capture a webcam photo and describe it for additional conversation context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "user_prompt": {
+                        "type": "string",
+                        "description": "The user's current request to guide the webcam analysis.",
+                    }
+                },
+            },
+            handler=lambda user_prompt="": capture_webcam_context_tool(user_prompt=user_prompt),
+        )
 
 
 register_builtin_tools()
@@ -720,6 +755,72 @@ def speak_with_openai(text: str) -> bool:
             stream.stop_stream()
             stream.close()
         player.terminate()
+
+
+# Lazy-loaded Kokoro ONNX instance for streaming TTS
+_kokoro_onnx_instance: Optional[Any] = None
+
+
+def _get_kokoro_onnx():
+    """Lazy initialization of Kokoro ONNX for streaming TTS."""
+    global _kokoro_onnx_instance
+    if _kokoro_onnx_instance is None:
+        try:
+            from kokoro_onnx import Kokoro
+            model_path = KOKORO_ONNX_MODEL_PATH or "kokoro-v1.0.onnx"
+            voices_path = KOKORO_VOICES_BIN_PATH or "voices-v1.0.bin"
+            _kokoro_onnx_instance = Kokoro(model_path, voices_path)
+            log(f"Initialized Kokoro ONNX streaming TTS", title="TTS", style="bold blue")
+        except Exception as exc:
+            log(f"Failed to initialize Kokoro ONNX: {exc}", title="TTS", style="bold red")
+            return None
+    return _kokoro_onnx_instance
+
+
+def speak_with_kokoro_streaming(text: str) -> bool:
+    """Stream audio using kokoro-onnx for low-latency playback (sentence by sentence)."""
+    kokoro = _get_kokoro_onnx()
+    if kokoro is None:
+        return False
+
+    try:
+        import sounddevice as sd
+
+        voice = (KOKORO_VOICE or "af_sarah").strip() or "af_sarah"
+        speed_value = (KOKORO_SPEED or "1.0").strip() or "1.0"
+        try:
+            speed = float(speed_value)
+        except ValueError:
+            speed = 1.0
+
+        # Split text into sentences for pseudo-streaming (low latency on first output)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            try:
+                samples, sample_rate = kokoro.create(
+                    sentence,
+                    voice=voice,
+                    speed=speed,
+                    lang=KOKORO_LANGUAGE or "en-us"
+                )
+                sd.play(samples, sample_rate)
+                sd.wait()
+            except Exception as exc:
+                log(f"Kokoro streaming sentence failed: {exc}", title="TTS", style="bold yellow")
+                continue
+
+        return True
+
+    except ImportError:
+        log("sounddevice not installed. Run: pip install sounddevice", title="TTS", style="bold red")
+        return False
+    except Exception as exc:
+        log(f"Kokoro streaming TTS failed: {exc}", title="TTS", style="bold red")
+        return False
 
 
 def speak_with_kokoro(text: str) -> bool:
@@ -832,6 +933,13 @@ def speak(text: str) -> None:
         )
 
     if provider == "kokoro":
+        # Try streaming mode first for lower latency
+        if KOKORO_STREAMING:
+            if speak_with_kokoro_streaming(text):
+                return
+            log("Streaming Kokoro failed. Trying CLI fallback.", title="TTS", style="bold yellow")
+
+        # Fall back to CLI-based Kokoro
         if speak_with_kokoro(text):
             return
         log("Falling back to OpenAI TTS.", title="TTS", style="bold yellow")

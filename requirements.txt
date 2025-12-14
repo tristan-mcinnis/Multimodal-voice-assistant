@@ -10,4 +10,6 @@ pygame
 duckduckgo-search
 scikit-learn
 numpy
-kokoro-tts
+sounddevice
+# Optional: Kokoro TTS (requires Python <=3.12)
+# pip install kokoro-tts kokoro-onnx  # for local TTS with streaming support
