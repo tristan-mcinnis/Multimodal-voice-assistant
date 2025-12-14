@@ -1,7 +1,47 @@
+# Virtual environment
 .venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Audio files
 *.wav
-*.txt
+
+# Logs
+logs/
 *.log
+
+# Data directory
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Screenshots and webcam captures (generated at runtime)
+screenshot.jpg
+webcam.jpg
+
+# Environment files
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A multi-modal AI voice assistant that supports both cloud (OpenAI) and fully local (LM Studio + Kokoro) operation. Uses Whisper for local speech-to-text and configurable TTS (OpenAI streaming or Kokoro). Listens for the wake word "nova", then processes voice commands with support for clipboard extraction, web search, and optional screenshot/webcam analysis via tool calling.
+A multi-modal AI voice assistant that supports cloud (OpenAI), local (LM Studio + Kokoro), and Claude (Anthropic) operation. Uses Whisper for local speech-to-text and configurable TTS (OpenAI streaming or Kokoro). Listens for the wake word "nova", then processes voice commands with support for clipboard extraction, web search, and optional screenshot/webcam analysis via tool calling.
 
 ## Running the Assistant
 
@@ -12,8 +12,18 @@ A multi-modal AI voice assistant that supports both cloud (OpenAI) and fully loc
 # Install dependencies
 pip install -r requirements.txt
 
+# Or install as a package
+pip install -e .
+
+# Run with entry point script
+python run.py
+
+# Or run as a module
+python -m assistant
+
 # Cloud mode (requires OPENAI_API_KEY)
-python assistant.py
+export LLM_PROVIDER=openai
+python -m assistant
 
 # Local mode (LM Studio + Kokoro for low latency)
 export LLM_PROVIDER=local
@@ -21,31 +31,73 @@ export LOCAL_LLM_BASE_URL=http://localhost:1234/v1
 export LOCAL_LLM_MODEL=your-model-name
 export ASSISTANT_TTS_PROVIDER=kokoro
 export ASSISTANT_SIMPLE_TOOLS=true
-python assistant.py
+python -m assistant
+
+# Claude mode (requires ANTHROPIC_API_KEY)
+export LLM_PROVIDER=anthropic
+python -m assistant
 ```
 
 ## Architecture
 
-**Single-file architecture** - all code lives in `assistant.py` (~900 lines).
+**Modular package architecture** in the `assistant/` directory.
+
+### Directory Structure
+
+```
+assistant/
+├── __init__.py           # Package init, exports VoiceAssistant, main
+├── __main__.py           # Entry point: python -m assistant
+├── core.py               # Main VoiceAssistant class and orchestration
+├── config/
+│   └── settings.py       # All env vars, ModelCatalog, defaults
+├── providers/
+│   ├── llm/
+│   │   ├── base.py           # Abstract LLMProvider class
+│   │   ├── openai_provider.py
+│   │   ├── local_provider.py
+│   │   └── anthropic_provider.py
+│   └── tts/
+│       ├── base.py           # Abstract TTSProvider class
+│       ├── openai_tts.py
+│       └── kokoro_tts.py
+├── tools/
+│   ├── registry.py       # ToolRegistry class
+│   ├── vision_tools.py   # Screenshot, webcam tools
+│   ├── search_tools.py   # DuckDuckGo search
+│   └── clipboard_tools.py
+├── context/
+│   ├── conversation.py   # EnhancedConversationContext
+│   └── mcp.py            # ContextProvider, MCPContextProvider
+├── speech/
+│   ├── recognition.py    # Whisper transcription
+│   └── audio.py          # Audio playback
+├── media/
+│   ├── screenshot.py     # PIL screenshot capture
+│   └── webcam.py         # Pygame webcam capture
+└── utils/
+    ├── logging.py        # Rich logging
+    └── messages.py       # Message normalization
+```
 
 ### Key Components
 
-- **ModelCatalog / OpenAIModelManager** (lines 156-204): Model preference lists with automatic fallback between models (gpt-5 → gpt-5-mini → gpt-5-nano → gpt-4o).
+- **`assistant/core.py`**: `VoiceAssistant` class orchestrates the entire pipeline. Contains `complete_chat_with_tools()` for the tool calling loop and `llm_prompt()` for context assembly.
 
-- **ToolRegistry** (lines 229-293): Central registry for OpenAI function calling. Tools are registered with `register_builtin_tools()` at line 557. Each tool has metadata and a handler function.
+- **`assistant/providers/llm/`**: Pluggable LLM providers with automatic fallback. Factory function `get_llm_provider()` returns the configured provider.
 
-- **ContextProvider / MCPContextProvider** (lines 298-359): Pluggable context injection system for Model Context Protocol integration. Currently supports reading from a file (`MCP_CONTEXT_FILE` env var).
+- **`assistant/providers/tts/`**: Pluggable TTS providers. `KokoroProvider` supports both CLI and ONNX streaming modes.
 
-- **EnhancedConversationContext** (lines 91-150): Manages conversation history with TF-IDF similarity-based topic change detection and automatic context clearing.
+- **`assistant/tools/registry.py`**: `ToolRegistry` class for OpenAI function calling. Tools are registered in `VoiceAssistant._register_builtin_tools()`.
 
-- **TTS System** (lines 696-841): Dual-provider text-to-speech with OpenAI streaming (`speak_with_openai`) and Kokoro CLI (`speak_with_kokoro`) with automatic fallback.
+- **`assistant/context/`**: Conversation context with TF-IDF topic detection and MCP integration.
 
 ### Adding New Tools
 
-Register tools in `register_builtin_tools()` using:
+Register tools in `VoiceAssistant._register_builtin_tools()` (in `core.py`) or create a new tool file in `assistant/tools/`:
 
 ```python
-tool_registry.register(
+self.tool_registry.register(
     name="tool_name",
     description="What the tool does",
     parameters={"type": "object", "properties": {...}},
@@ -53,28 +105,32 @@ tool_registry.register(
 )
 ```
 
-The GPT models will automatically call tools when appropriate. Tool handlers should return strings or JSON-serializable objects.
+### Adding a New LLM Provider
+
+1. Create `assistant/providers/llm/your_provider.py`
+2. Implement the `LLMProvider` abstract class from `base.py`
+3. Update `assistant/providers/llm/__init__.py` factory function
 
 ## Environment Variables
 
 ### LLM Configuration
 | Variable | Purpose |
 |----------|---------|
-| `LLM_PROVIDER` | `openai` (default) or `local` for LM Studio |
+| `LLM_PROVIDER` | `openai`, `local`, or `anthropic` |
 | `OPENAI_API_KEY` | Required when LLM_PROVIDER=openai |
+| `ANTHROPIC_API_KEY` | Required when LLM_PROVIDER=anthropic |
 | `LOCAL_LLM_BASE_URL` | LM Studio endpoint (default: http://localhost:1234/v1) |
 | `LOCAL_LLM_MODEL` | Model name loaded in LM Studio |
 | `OPENAI_PREFERRED_CHAT_MODEL` | Override primary chat model (default: gpt-5) |
-| `OPENAI_PREFERRED_VISION_MODEL` | Override vision model |
-| `OPENAI_PREFERRED_TOOL_MODEL` | Override structured/tool model |
+| `CLAUDE_PREFERRED_CHAT_MODEL` | Override Claude chat model (default: claude-opus-4-5) |
 
 ### TTS Configuration
 | Variable | Purpose |
 |----------|---------|
 | `ASSISTANT_TTS_PROVIDER` | `openai` (default) or `kokoro` |
-| `KOKORO_VOICE` | Voice name (default: af_sarah). Options: af_nicole, am_adam, am_michael, bf_emma, bm_george |
+| `KOKORO_VOICE` | Voice name (default: af_sarah) |
 | `KOKORO_SPEED` | Speech speed (default: 1.0) |
-| `KOKORO_STREAMING` | Set to `true` for low-latency streaming mode (requires kokoro-onnx) |
+| `KOKORO_STREAMING` | Set to `true` for low-latency ONNX streaming |
 | `KOKORO_ONNX_MODEL_PATH` | Path to kokoro ONNX model file |
 | `KOKORO_VOICES_BIN_PATH` | Path to kokoro voices directory |
 
@@ -82,11 +138,17 @@ The GPT models will automatically call tools when appropriate. Tool handlers sho
 | Variable | Purpose |
 |----------|---------|
 | `ASSISTANT_DISABLE_TOOLS` | Set to `1`/`true`/`yes` to disable tool calling |
-| `ASSISTANT_SIMPLE_TOOLS` | Set to `true` to only enable clipboard and web search (skip vision tools) |
+| `ASSISTANT_SIMPLE_TOOLS` | Set to `true` to only enable clipboard and web search |
 | `MCP_CONTEXT_FILE` | Path to file for MCP context injection |
 
 ## Key Patterns
 
-- **Graceful degradation**: Models fall back to alternatives on failure; TTS falls back from Kokoro to OpenAI.
-- **Tool execution loop**: `complete_chat_with_tools()` (line 620) handles the OpenAI tool calling loop, executing tools and feeding results back until no more tool calls are requested.
-- **Voice pipeline**: Microphone → Whisper transcription → wake word extraction → GPT response → TTS output.
+- **Provider abstraction**: LLM and TTS providers implement abstract interfaces for easy swapping
+- **Graceful degradation**: Models fall back to alternatives on failure; TTS falls back from Kokoro to OpenAI
+- **Factory functions**: `get_llm_provider()` and `get_tts_provider()` instantiate configured providers
+- **Tool execution loop**: `complete_chat_with_tools()` handles the OpenAI tool calling loop
+- **Voice pipeline**: Microphone → Whisper → wake word extraction → LLM → TTS
+
+## Logs
+
+Logs are saved to `logs/YYYY/MM/DD-HHMMSS.log` with a `latest.log` symlink.

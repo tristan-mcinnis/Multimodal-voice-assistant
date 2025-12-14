@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multimodal-voice-assistant"
+version = "0.2.0"
+description = "A multi-modal AI voice assistant supporting cloud and local operation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Tristan McInnis"}
+]
+keywords = ["voice-assistant", "ai", "openai", "claude", "tts", "whisper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai>=1.40.0",
+    "faster-whisper",
+    "SpeechRecognition",
+    "pyaudio",
+    "sounddevice",
+    "pygame",
+    "Pillow",
+    "opencv-python-headless",
+    "duckduckgo-search",
+    "pyperclip",
+    "scikit-learn",
+    "numpy",
+    "rich",
+]
+
+[project.optional-dependencies]
+kokoro = [
+    "kokoro-tts",
+    "kokoro-onnx",
+]
+anthropic = [
+    "anthropic>=0.39.0",
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+]
+all = [
+    "multimodal-voice-assistant[kokoro,anthropic,dev]",
+]
+
+[project.scripts]
+voice-assistant = "assistant:main"
+
+[project.urls]
+Homepage = "https://github.com/tristan-mcinnis/Multimodal-voice-assistant"
+Repository = "https://github.com/tristan-mcinnis/Multimodal-voice-assistant.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["assistant*"]
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true

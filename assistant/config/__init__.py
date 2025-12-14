@@ -1,0 +1,63 @@
+"""Configuration module for the voice assistant."""
+
+from .settings import (
+    # LLM settings
+    LLM_PROVIDER,
+    LOCAL_LLM_BASE_URL,
+    LOCAL_LLM_API_KEY,
+    LOCAL_LLM_MODEL,
+    OPENAI_API_KEY,
+    # TTS settings
+    TTS_PROVIDER,
+    KOKORO_CLI_PATH,
+    KOKORO_VOICE,
+    KOKORO_LANGUAGE,
+    KOKORO_SPEED,
+    KOKORO_MODEL_PATH,
+    KOKORO_VOICES_PATH,
+    KOKORO_STREAMING,
+    KOKORO_ONNX_MODEL_PATH,
+    KOKORO_VOICES_BIN_PATH,
+    # Tool settings
+    ENABLE_TOOL_CALLING,
+    SIMPLE_TOOLS,
+    # Context settings
+    MCP_CONTEXT_FILE,
+    MCP_ENDPOINT,
+    MCP_DEFAULT_NAMESPACE,
+    # Model catalog
+    ModelCatalog,
+    DEFAULT_MODEL_CATALOG,
+    # System config
+    WAKE_WORD,
+    SYSTEM_MESSAGE,
+    NUM_CORES,
+)
+
+__all__ = [
+    "LLM_PROVIDER",
+    "LOCAL_LLM_BASE_URL",
+    "LOCAL_LLM_API_KEY",
+    "LOCAL_LLM_MODEL",
+    "OPENAI_API_KEY",
+    "TTS_PROVIDER",
+    "KOKORO_CLI_PATH",
+    "KOKORO_VOICE",
+    "KOKORO_LANGUAGE",
+    "KOKORO_SPEED",
+    "KOKORO_MODEL_PATH",
+    "KOKORO_VOICES_PATH",
+    "KOKORO_STREAMING",
+    "KOKORO_ONNX_MODEL_PATH",
+    "KOKORO_VOICES_BIN_PATH",
+    "ENABLE_TOOL_CALLING",
+    "SIMPLE_TOOLS",
+    "MCP_CONTEXT_FILE",
+    "MCP_ENDPOINT",
+    "MCP_DEFAULT_NAMESPACE",
+    "ModelCatalog",
+    "DEFAULT_MODEL_CATALOG",
+    "WAKE_WORD",
+    "SYSTEM_MESSAGE",
+    "NUM_CORES",
+]

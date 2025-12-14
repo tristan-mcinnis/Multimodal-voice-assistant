@@ -11,5 +11,7 @@ duckduckgo-search
 scikit-learn
 numpy
 sounddevice
-# Optional: Kokoro TTS (requires Python <=3.12)
-# pip install kokoro-tts kokoro-onnx  # for local TTS with streaming support
+
+# Optional dependencies:
+# pip install kokoro-tts kokoro-onnx  # for local Kokoro TTS with streaming support
+# pip install anthropic               # for Claude LLM provider
