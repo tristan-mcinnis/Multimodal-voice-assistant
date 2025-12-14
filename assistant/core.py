@@ -233,6 +233,7 @@ class VoiceAssistant:
         with open(prompt_audio_path, "wb") as f:
             f.write(audio.get_wav_data())
         prompt_text = wav_to_text(prompt_audio_path)
+        log(f"Heard: {prompt_text!r}", title="DEBUG", style="dim")
         clean_prompt = extract_prompt(prompt_text, WAKE_WORD)
 
         if clean_prompt:
@@ -263,6 +264,9 @@ class VoiceAssistant:
     def start_listening(self) -> None:
         """Start the background listening loop."""
         log("Adjusting for ambient noise...", title="ACTION", style="bold blue")
+        # Increase pause threshold so "Nova, how are you?" stays in one chunk
+        self.recognizer.pause_threshold = 1.5  # seconds of silence before phrase is considered complete
+        self.recognizer.phrase_threshold = 0.3  # minimum seconds of speech to consider
         with sr.Microphone() as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
             console.print(Panel(f"Say '{WAKE_WORD}' followed with your prompt.", border_style="bold magenta", title="INSTRUCTIONS"))

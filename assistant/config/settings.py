@@ -45,7 +45,7 @@ CLAUDE_PREFERRED_TOOL_MODEL = os.getenv("CLAUDE_PREFERRED_TOOL_MODEL", "claude-s
 # -----------------------------------------------------------------------------
 # TTS Provider Configuration
 # -----------------------------------------------------------------------------
-TTS_PROVIDER = os.getenv("ASSISTANT_TTS_PROVIDER", "openai").strip().lower()
+TTS_PROVIDER = os.getenv("ASSISTANT_TTS_PROVIDER", "kokoro").strip().lower()
 
 # Kokoro TTS settings
 KOKORO_CLI_PATH = os.getenv("KOKORO_CLI_PATH", "kokoro-tts").strip() or "kokoro-tts"
