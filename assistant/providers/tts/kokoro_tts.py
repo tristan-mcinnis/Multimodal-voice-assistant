@@ -8,8 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import wave
+import threading
+import queue
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Iterator
 
 import pyaudio
 
@@ -108,50 +110,116 @@ class KokoroProvider(TTSProvider):
 
         return False
 
-    def _speak_streaming(self, text: str) -> bool:
-        """Stream audio using kokoro-onnx for low-latency playback."""
+    def stream_speak(self, text_stream: Iterator[str]) -> bool:
+        """Speak text from a stream using Kokoro ONNX with pipelining."""
+        if not self._use_streaming:
+            # Fallback to base implementation (accumulate and speak)
+            return super().stream_speak(text_stream)
+
         kokoro = _get_kokoro_onnx()
         if kokoro is None:
-            return False
+            return super().stream_speak(text_stream)
 
         try:
             import sounddevice as sd
+            import numpy as np
+        except ImportError:
+            log("sounddevice not installed. Run: pip install sounddevice", title="TTS", style="bold red")
+            return super().stream_speak(text_stream)
 
-            voice = (KOKORO_VOICE or "af_sarah").strip() or "af_sarah"
-            speed_value = (KOKORO_SPEED or "1.0").strip() or "1.0"
+        voice = (KOKORO_VOICE or "af_sarah").strip() or "af_sarah"
+        speed_value = (KOKORO_SPEED or "1.0").strip() or "1.0"
+        try:
+            speed = float(speed_value)
+        except ValueError:
+            speed = 1.0
+
+        # Queue for audio samples: (samples, sample_rate)
+        audio_queue = queue.Queue()
+        playback_finished = threading.Event()
+
+        def playback_worker():
+            """Worker thread to play audio from queue."""
             try:
-                speed = float(speed_value)
-            except ValueError:
-                speed = 1.0
+                while True:
+                    item = audio_queue.get()
+                    if item is None:
+                        break
+                    samples, sample_rate = item
+                    sd.play(samples, sample_rate)
+                    sd.wait()
+                    audio_queue.task_done()
+            except Exception as e:
+                log(f"Playback error: {e}", title="TTS", style="bold red")
+            finally:
+                playback_finished.set()
 
-            # Split text into sentences for pseudo-streaming (low latency on first output)
-            sentences = re.split(r'(?<=[.!?])\s+', text)
+        # Start playback thread
+        player_thread = threading.Thread(target=playback_worker)
+        player_thread.start()
 
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
+        try:
+            # Buffer for sentence accumulation
+            buffer = ""
+            # Simple sentence splitter: . ? ! followed by space or end of line
+            # We want to keep the punctuation in the sentence we feed to TTS
+            sentence_end_pattern = re.compile(r'(?<=[.!?])\s+')
+
+            for chunk in text_stream:
+                if not chunk:
                     continue
+                buffer += chunk
+
+                # Check for sentence boundaries
+                while True:
+                    match = sentence_end_pattern.search(buffer)
+                    if not match:
+                        break
+
+                    # Split at the end of the match
+                    split_idx = match.end()
+                    sentence = buffer[:split_idx].strip()
+                    buffer = buffer[split_idx:]
+
+                    if sentence:
+                        try:
+                            # Generate audio (this blocks, but playback is in another thread)
+                            samples, sample_rate = kokoro.create(
+                                sentence,
+                                voice=voice,
+                                speed=speed,
+                                lang=KOKORO_LANGUAGE or "en-us",
+                            )
+                            audio_queue.put((samples, sample_rate))
+                        except Exception as exc:
+                            log(f"Kokoro generation failed for segment: {exc}", title="TTS", style="bold yellow")
+
+            # Process remaining text in buffer
+            if buffer.strip():
                 try:
                     samples, sample_rate = kokoro.create(
-                        sentence,
+                        buffer.strip(),
                         voice=voice,
                         speed=speed,
                         lang=KOKORO_LANGUAGE or "en-us",
                     )
-                    sd.play(samples, sample_rate)
-                    sd.wait()
+                    audio_queue.put((samples, sample_rate))
                 except Exception as exc:
-                    log(f"Kokoro streaming sentence failed: {exc}", title="TTS", style="bold yellow")
-                    continue
+                    log(f"Kokoro generation failed for final segment: {exc}", title="TTS", style="bold yellow")
 
-            return True
+        except Exception as e:
+            log(f"Stream processing error: {e}", title="TTS", style="bold red")
+        finally:
+            # Signal playback thread to stop
+            audio_queue.put(None)
+            player_thread.join()
 
-        except ImportError:
-            log("sounddevice not installed. Run: pip install sounddevice", title="TTS", style="bold red")
-            return False
-        except Exception as exc:
-            log(f"Kokoro streaming TTS failed: {exc}", title="TTS", style="bold red")
-            return False
+        return True
+
+    def _speak_streaming(self, text: str) -> bool:
+        """Stream audio using kokoro-onnx for low-latency playback."""
+        # Reuse the stream_speak logic by simulating a stream
+        return self.stream_speak(iter([text]))
 
     def _speak_cli(self, text: str) -> bool:
         """Speak text using the Kokoro CLI."""

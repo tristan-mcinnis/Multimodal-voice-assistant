@@ -170,6 +170,91 @@ class VoiceAssistant:
             messages.append(message_dict)
             return message_dict
 
+    def stream_chat_with_tools(self, messages: List[Dict[str, Any]]) -> Iterator[str]:
+        """Execute chat completion with streaming and tool calling.
+
+        Yields:
+            Chunks of the content response.
+        """
+        while True:
+            params: Dict[str, Any] = {"messages": messages}
+            tools_enabled = ENABLE_TOOL_CALLING and self.tool_registry.has_tools()
+            if tools_enabled:
+                params["tools"] = self.tool_registry.as_openai_tools()
+                params["tool_choice"] = "auto"
+
+            try:
+                stream = self.llm_provider.stream_chat_completion("conversation", **params)
+
+                accumulated_content = []
+                tool_calls_accumulator = []
+                current_tool_index = None
+
+                is_tool_call = False
+
+                for chunk in stream:
+                    delta = chunk.choices[0].delta
+
+                    # Detect tool call on any chunk
+                    if delta.tool_calls and not is_tool_call:
+                        is_tool_call = True
+
+                    if is_tool_call:
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                if tc.index is not None:
+                                    current_tool_index = tc.index
+                                    while len(tool_calls_accumulator) <= current_tool_index:
+                                        tool_calls_accumulator.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+
+                                tool_call = tool_calls_accumulator[current_tool_index]
+                                if tc.id:
+                                    tool_call["id"] += tc.id
+                                if tc.function:
+                                    if tc.function.name:
+                                        tool_call["function"]["name"] += tc.function.name
+                                    if tc.function.arguments:
+                                        tool_call["function"]["arguments"] += tc.function.arguments
+                    else:
+                        if delta.content:
+                            content = delta.content
+                            accumulated_content.append(content)
+                            yield content
+
+                if is_tool_call:
+                    message_dict = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls_accumulator
+                    }
+                    messages.append(message_dict)
+
+                    for call in tool_calls_accumulator:
+                        function = call.get("function", {})
+                        name = function.get("name", "")
+                        arguments = function.get("arguments", "{}")
+                        log(f"Executing tool: {name}", title="TOOL", style="bold magenta")
+                        result = self.tool_registry.execute(name, arguments)
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.get("id"),
+                                "content": result,
+                            }
+                        )
+                    continue
+                else:
+                    full_content = "".join(accumulated_content)
+                    messages.append({"role": "assistant", "content": full_content})
+                    return
+
+            except NotImplementedError:
+                log("Streaming not supported, falling back to standard generation.", title="LLM", style="yellow")
+                message = self.complete_chat_with_tools(messages)
+                content = extract_message_text(message)
+                yield content
+                return
+
     def llm_prompt(self, prompt: str, img_context: Optional[str] = None) -> str:
         """Process a prompt through the LLM.
 
@@ -194,11 +279,21 @@ class VoiceAssistant:
             prompt = f"{prompt}\n\nIMAGE CONTEXT: {img_context}"
 
         self.convo.append({"role": "user", "content": prompt})
-        response_message = self.complete_chat_with_tools(self.convo)
-        response_text = extract_message_text(response_message)
 
-        self.conversation_context.add_exchange(base_prompt, response_text)
-        return response_text
+        response_generator = self.stream_chat_with_tools(self.convo)
+
+        full_response_text = ""
+
+        def text_accumulator(generator):
+            nonlocal full_response_text
+            for chunk in generator:
+                full_response_text += chunk
+                yield chunk
+
+        self.tts_provider.stream_speak(text_accumulator(response_generator))
+
+        self.conversation_context.add_exchange(base_prompt, full_response_text)
+        return full_response_text
 
     def speak(self, text: str) -> None:
         """Speak text using the configured TTS provider with fallback.
@@ -229,10 +324,9 @@ class VoiceAssistant:
             recognizer: The speech recognizer
             audio: The audio data
         """
-        prompt_audio_path = "prompt.wav"
-        with open(prompt_audio_path, "wb") as f:
-            f.write(audio.get_wav_data())
-        prompt_text = wav_to_text(prompt_audio_path)
+        import io
+        wav_data = io.BytesIO(audio.get_wav_data())
+        prompt_text = wav_to_text(wav_data)
         log(f"Heard: {prompt_text!r}", title="DEBUG", style="dim")
         clean_prompt = extract_prompt(prompt_text, WAKE_WORD)
 
@@ -259,7 +353,7 @@ class VoiceAssistant:
                 response = self.llm_prompt(prompt=clean_prompt, img_context=None)
 
             log(f"ASSISTANT: {response}", title="ASSISTANT RESPONSE", style="bold magenta")
-            self.speak(response)
+            # self.speak(response) # handled inside llm_prompt for streaming
 
     def start_listening(self) -> None:
         """Start the background listening loop."""

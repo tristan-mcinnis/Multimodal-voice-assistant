@@ -28,6 +28,24 @@ class LLMProvider(ABC):
         """
         pass
 
+    def stream_chat_completion(
+        self,
+        capability: str,
+        messages: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Any:
+        """Execute chat completion with streaming.
+
+        Args:
+            capability: The capability type ("conversation", "vision", "structured")
+            messages: List of message dictionaries
+            **kwargs: Additional arguments passed to the underlying API
+
+        Returns:
+            A generator yielding chunks of the response
+        """
+        raise NotImplementedError("Streaming not supported by this provider")
+
     @property
     @abstractmethod
     def supports_vision(self) -> bool:
