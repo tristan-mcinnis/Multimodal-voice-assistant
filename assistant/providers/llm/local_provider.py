@@ -113,3 +113,40 @@ class LocalProvider(LLMProvider):
                     style="bold yellow",
                 )
         raise RuntimeError(f"All models failed for capability '{capability}'.") from last_error
+
+    def stream_chat_completion(
+        self,
+        capability: str,
+        messages: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> Any:
+        """Execute chat completion with streaming using local model."""
+        last_error: Optional[Exception] = None
+        models = self._catalog.get(capability)
+
+        if not models:
+            models = [self._detected_model or LOCAL_LLM_MODEL]
+
+        for model_name in models:
+            try:
+                # Force stream=True in kwargs
+                kwargs["stream"] = True
+                stream = self._client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    **kwargs,
+                )
+                log(
+                    f"Model '{model_name}' streaming the '{capability}' request.",
+                    title="MODEL",
+                    style="bold blue",
+                )
+                return stream
+            except Exception as exc:
+                last_error = exc
+                log(
+                    f"Model '{model_name}' unavailable for streaming ({exc}). Trying fallback...",
+                    title="MODEL",
+                    style="bold yellow",
+                )
+        raise RuntimeError(f"All models failed streaming for capability '{capability}'.") from last_error
