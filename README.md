@@ -1,15 +1,16 @@
 # Multi-Modal AI Voice Assistant
 
-A multi-modal AI voice assistant supporting multiple LLM providers (OpenAI, local LM Studio, Claude/Anthropic) with configurable text-to-speech (OpenAI streaming or Kokoro). Combines voice transcription, tool calling, clipboard extraction, screenshot analysis, and web search to respond with rich context.
+A multi-modal AI voice assistant supporting **DeepSeek (default)**, OpenAI, Anthropic Claude, and local LM Studio LLMs with configurable text-to-speech (OpenAI streaming or Kokoro). Combines voice transcription, tool calling, clipboard extraction, screenshot analysis, and web search to respond with rich context.
 
 ## Features
 
-- **Multi-provider LLM support**: OpenAI (GPT-5), local models via LM Studio, Claude/Anthropic
+- **Multi-provider LLM support**: DeepSeek (default, fast & cheap), OpenAI (GPT-5), local LM Studio, Anthropic Claude
 - **Tool calling**: Screenshot capture, webcam capture, clipboard extraction, DuckDuckGo search
 - **Flexible TTS**: OpenAI streaming voices or offline Kokoro synthesis
 - **Model Context Protocol (MCP)**: Pluggable context providers for external integrations
 - **Wake word activation**: Say "nova" followed by your prompt
 - **Graceful fallbacks**: Models and TTS providers fall back automatically on failure
+- **`.env` support**: All credentials/config can live in a single gitignored `.env` file
 
 ## Installation
 
@@ -31,20 +32,14 @@ pip install -e .
 
 ## Quick Start
 
-### Cloud mode (OpenAI)
+### Default mode (DeepSeek + Kokoro)
 
 ```bash
-export OPENAI_API_KEY="sk-..."
-export LLM_PROVIDER=openai
-export ASSISTANT_TTS_PROVIDER=openai
-python run.py
-```
+# 1. Copy the example .env and add your DeepSeek key
+cp .env.example .env
+# Edit .env, set DEEPSEEK_API_KEY=sk-...
 
-### Local mode (LM Studio + Kokoro)
-
-```bash
-# 1. Start LM Studio and load a model
-# 2. Download Kokoro TTS models (one-time, ~335MB)
+# 2. (Optional) Download Kokoro TTS models for offline speech (~335MB)
 mkdir -p models
 curl -L -o models/kokoro-v1.0.onnx https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
 curl -L -o models/voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
@@ -53,14 +48,45 @@ curl -L -o models/voices-v1.0.bin https://github.com/nazdridoy/kokoro-tts/releas
 python run.py
 ```
 
+Get a DeepSeek API key at <https://platform.deepseek.com/>. The default model is
+`deepseek-v4-flash` (1M context, low-latency). Override with
+`DEEPSEEK_PREFERRED_CHAT_MODEL=deepseek-v4-pro` for the higher-capability model.
+
+### Cloud mode (OpenAI)
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export LLM_PROVIDER=openai
+python run.py
+```
+
+### Local mode (LM Studio)
+
+```bash
+# Start LM Studio and load a model first.
+export LLM_PROVIDER=local
+export LOCAL_LLM_BASE_URL=http://localhost:1234/v1
+python run.py
+```
+
 The wake word is **"nova"**. Say it followed by your request.
 
 ## Configuration
 
+The assistant reads a `.env` file in the project root (loaded via
+`python-dotenv` before any submodule imports). Anything you can `export` you
+can also drop in `.env`. See [`.env.example`](./.env.example) for the full
+template — `.env` itself is gitignored.
+
 ### LLM Providers
 
 ```bash
-# OpenAI (default)
+# DeepSeek (default — set in .env)
+export LLM_PROVIDER=deepseek
+export DEEPSEEK_API_KEY="sk-..."
+export DEEPSEEK_PREFERRED_CHAT_MODEL=deepseek-v4-flash  # or deepseek-v4-pro
+
+# OpenAI
 export LLM_PROVIDER=openai
 export OPENAI_API_KEY="sk-..."
 
@@ -91,7 +117,10 @@ export ASSISTANT_TTS_PROVIDER=openai
 
 | Variable | Description |
 |----------|-------------|
-| `LLM_PROVIDER` | `openai`, `local`, or `anthropic` |
+| `LLM_PROVIDER` | `deepseek` (default), `openai`, `local`, or `anthropic` |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (default provider) |
+| `DEEPSEEK_PREFERRED_CHAT_MODEL` | Default `deepseek-v4-flash` |
+| `DEEPSEEK_BASE_URL` | Override (default `https://api.deepseek.com`) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude) |
 | `LOCAL_LLM_BASE_URL` | LM Studio endpoint (default: `http://localhost:1234/v1`) |
@@ -105,17 +134,42 @@ export ASSISTANT_TTS_PROVIDER=openai
 
 ```
 assistant/
-├── core.py               # VoiceAssistant orchestrator
-├── config/settings.py    # Environment configuration
+├── core.py                                # VoiceAssistant orchestrator
+├── config/settings.py                     # Env-var parsing
 ├── providers/
-│   ├── llm/              # OpenAI, local, Anthropic providers
-│   └── tts/              # OpenAI, Kokoro providers
-├── tools/                # Tool registry and implementations
-├── context/              # Conversation and MCP context
-├── speech/               # Whisper recognition
-├── media/                # Screenshot, webcam capture
-└── utils/                # Logging, message helpers
+│   ├── llm/
+│   │   ├── openai_compatible.py           # Shared adapter for OpenAI-shaped APIs
+│   │   ├── deepseek_provider.py           # DeepSeek (default)
+│   │   ├── openai_provider.py             # OpenAI
+│   │   ├── local_provider.py              # LM Studio
+│   │   └── anthropic_provider.py          # Claude
+│   └── tts/                               # OpenAI, Kokoro
+├── tools/
+│   ├── loop.py                            # Unified streaming tool-call loop
+│   ├── registry.py                        # Tool registry
+│   └── …                                  # clipboard, search, vision tools
+├── context/                               # Conversation and MCP context
+├── speech/                                # Whisper recognition
+├── media/                                 # Screenshot, webcam capture
+└── utils/                                 # Logging, message helpers
 ```
+
+DeepSeek, OpenAI, and LM Studio all speak the OpenAI Chat Completions wire
+format and share `OpenAICompatibleProvider` — see
+[ADR 0001](./docs/adr/0001-consolidate-openai-compatible-providers.md). The
+streaming + non-streaming tool-call loop lives behind one seam — see
+[ADR 0002](./docs/adr/0002-unified-tool-loop.md). The domain glossary is in
+[CONTEXT.md](./CONTEXT.md).
+
+## Testing
+
+```bash
+pip install -e '.[dev]'
+pytest
+```
+
+Tests cover the tool registry, the unified `ToolLoop` (with a scripted fake
+provider — no network/audio needed), and the LLM provider factory.
 
 ## Extending
 

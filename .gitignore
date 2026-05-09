@@ -44,9 +44,22 @@ dist/
 screenshot.jpg
 webcam.jpg
 
-# Environment files
+# Environment files (contain secrets — never commit)
 .env
-.env.local
+.env.*
+!.env.example
+
+# API keys / credentials
+*.key
+*.pem
+secrets/
+credentials.json
+api_keys.txt
+.api_keys
+.secrets
+
+# OMC working directory
+.omc/
 
 # Jupyter
 .ipynb_checkpoints/

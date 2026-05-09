@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import time
 from typing import Any, Dict, List, Optional
 
 import speech_recognition as sr
+from rich.panel import Panel
 
 from .config import (
     WAKE_WORD,
@@ -19,47 +21,43 @@ from .providers.llm import get_llm_provider, LLMProvider
 from .providers.tts import get_tts_provider, TTSProvider
 from .speech import wav_to_text, extract_prompt
 from .tools import (
+    ToolLoop,
     ToolRegistry,
     capture_screenshot_context_tool,
     capture_webcam_context_tool,
-    extract_clipboard_text_tool,
-    duckduckgo_search_tool,
     duckduckgo_search,
+    duckduckgo_search_tool,
+    extract_clipboard_text_tool,
     process_search_results,
 )
 from .tools.vision_tools import set_llm_provider
-from .utils import log, save_log, console, message_to_dict, extract_message_text, iter_tool_calls
-
-from rich.panel import Panel
+from .utils import console, log, save_log
 
 
 class VoiceAssistant:
     """Main voice assistant orchestrator."""
 
     def __init__(self) -> None:
-        # Initialize providers
         self.llm_provider: LLMProvider = get_llm_provider()
         self.tts_provider: TTSProvider = get_tts_provider()
-
-        # Set up vision tools with LLM provider
         set_llm_provider(self.llm_provider)
 
-        # Initialize context
         self.conversation_context = EnhancedConversationContext()
         self.context_provider_registry = ContextProviderRegistry()
         self.context_provider_registry.register(MCPContextProvider())
 
-        # Initialize tool registry
         self.tool_registry = ToolRegistry()
         self._register_builtin_tools()
 
-        # Conversation history
-        self.convo: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_MESSAGE}]
+        self.tool_loop = ToolLoop(
+            llm_provider=self.llm_provider,
+            tool_registry=self.tool_registry,
+            tools_enabled=ENABLE_TOOL_CALLING,
+        )
 
-        # Speech recognition
+        self.convo: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_MESSAGE}]
         self.recognizer = sr.Recognizer()
 
-        # Log configuration
         if not ENABLE_TOOL_CALLING:
             log("Tool calling disabled via ASSISTANT_DISABLE_TOOLS.", title="TOOLS", style="bold yellow")
         if SIMPLE_TOOLS:
@@ -67,7 +65,6 @@ class VoiceAssistant:
 
     def _register_builtin_tools(self) -> None:
         """Register built-in tools with the registry."""
-        # Always register clipboard tool - works locally
         self.tool_registry.register(
             name="extract_clipboard_text",
             description="Extract the latest textual content from the user's clipboard.",
@@ -75,7 +72,6 @@ class VoiceAssistant:
             handler=lambda: extract_clipboard_text_tool(),
         )
 
-        # Always register web search - works locally
         self.tool_registry.register(
             name="duckduckgo_search",
             description="Perform a DuckDuckGo search and return the most relevant results.",
@@ -98,173 +94,43 @@ class VoiceAssistant:
             handler=lambda query, max_results=5: duckduckgo_search_tool(query=query, max_results=max_results),
         )
 
-        # Vision-heavy tools - only register if not in simple tools mode
-        if not SIMPLE_TOOLS:
-            self.tool_registry.register(
-                name="capture_screenshot_context",
-                description=(
-                    "Capture a screenshot on the user's machine (macOS supported) and describe it for additional conversation context."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "user_prompt": {
-                            "type": "string",
-                            "description": "The user's current request to guide the screenshot analysis.",
-                        }
-                    },
-                },
-                handler=lambda user_prompt="": capture_screenshot_context_tool(user_prompt=user_prompt),
-            )
-            self.tool_registry.register(
-                name="capture_webcam_context",
-                description="Capture a webcam photo and describe it for additional conversation context.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "user_prompt": {
-                            "type": "string",
-                            "description": "The user's current request to guide the webcam analysis.",
-                        }
-                    },
-                },
-                handler=lambda user_prompt="": capture_webcam_context_tool(user_prompt=user_prompt),
-            )
+        if SIMPLE_TOOLS:
+            return
 
-    def complete_chat_with_tools(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Execute chat completion with tool calling loop.
-
-        Args:
-            messages: The conversation messages
-
-        Returns:
-            The final assistant message
-        """
-        while True:
-            params: Dict[str, Any] = {"messages": messages}
-            tools_enabled = ENABLE_TOOL_CALLING and self.tool_registry.has_tools()
-            if tools_enabled:
-                params["tools"] = self.tool_registry.as_openai_tools()
-                params["tool_choice"] = "auto"
-
-            response = self.llm_provider.chat_completion("conversation", **params)
-            message_dict = message_to_dict(response.choices[0].message)
-
-            tool_calls = iter_tool_calls(message_dict) if tools_enabled else []
-            if tool_calls:
-                messages.append(message_dict)
-                for call in tool_calls:
-                    function = call.get("function", {})
-                    name = function.get("name", "")
-                    arguments = function.get("arguments", "{}")
-                    result = self.tool_registry.execute(name, arguments)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.get("id"),
-                            "content": result,
-                        }
-                    )
-                continue
-
-            messages.append(message_dict)
-            return message_dict
-
-    def stream_chat_with_tools(self, messages: List[Dict[str, Any]]) -> Iterator[str]:
-        """Execute chat completion with streaming and tool calling.
-
-        Yields:
-            Chunks of the content response.
-        """
-        while True:
-            params: Dict[str, Any] = {"messages": messages}
-            tools_enabled = ENABLE_TOOL_CALLING and self.tool_registry.has_tools()
-            if tools_enabled:
-                params["tools"] = self.tool_registry.as_openai_tools()
-                params["tool_choice"] = "auto"
-
-            try:
-                stream = self.llm_provider.stream_chat_completion("conversation", **params)
-
-                accumulated_content = []
-                tool_calls_accumulator = []
-                current_tool_index = None
-
-                is_tool_call = False
-
-                for chunk in stream:
-                    delta = chunk.choices[0].delta
-
-                    # Detect tool call on any chunk
-                    if delta.tool_calls and not is_tool_call:
-                        is_tool_call = True
-
-                    if is_tool_call:
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                if tc.index is not None:
-                                    current_tool_index = tc.index
-                                    while len(tool_calls_accumulator) <= current_tool_index:
-                                        tool_calls_accumulator.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-
-                                tool_call = tool_calls_accumulator[current_tool_index]
-                                if tc.id:
-                                    tool_call["id"] += tc.id
-                                if tc.function:
-                                    if tc.function.name:
-                                        tool_call["function"]["name"] += tc.function.name
-                                    if tc.function.arguments:
-                                        tool_call["function"]["arguments"] += tc.function.arguments
-                    else:
-                        if delta.content:
-                            content = delta.content
-                            accumulated_content.append(content)
-                            yield content
-
-                if is_tool_call:
-                    message_dict = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": tool_calls_accumulator
+        self.tool_registry.register(
+            name="capture_screenshot_context",
+            description=(
+                "Capture a screenshot on the user's machine (macOS supported) and "
+                "describe it for additional conversation context."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "user_prompt": {
+                        "type": "string",
+                        "description": "The user's current request to guide the screenshot analysis.",
                     }
-                    messages.append(message_dict)
-
-                    for call in tool_calls_accumulator:
-                        function = call.get("function", {})
-                        name = function.get("name", "")
-                        arguments = function.get("arguments", "{}")
-                        log(f"Executing tool: {name}", title="TOOL", style="bold magenta")
-                        result = self.tool_registry.execute(name, arguments)
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call.get("id"),
-                                "content": result,
-                            }
-                        )
-                    continue
-                else:
-                    full_content = "".join(accumulated_content)
-                    messages.append({"role": "assistant", "content": full_content})
-                    return
-
-            except NotImplementedError:
-                log("Streaming not supported, falling back to standard generation.", title="LLM", style="yellow")
-                message = self.complete_chat_with_tools(messages)
-                content = extract_message_text(message)
-                yield content
-                return
+                },
+            },
+            handler=lambda user_prompt="": capture_screenshot_context_tool(user_prompt=user_prompt),
+        )
+        self.tool_registry.register(
+            name="capture_webcam_context",
+            description="Capture a webcam photo and describe it for additional conversation context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "user_prompt": {
+                        "type": "string",
+                        "description": "The user's current request to guide the webcam analysis.",
+                    }
+                },
+            },
+            handler=lambda user_prompt="": capture_webcam_context_tool(user_prompt=user_prompt),
+        )
 
     def llm_prompt(self, prompt: str, img_context: Optional[str] = None) -> str:
-        """Process a prompt through the LLM.
-
-        Args:
-            prompt: The user's prompt
-            img_context: Optional image context
-
-        Returns:
-            The assistant's response
-        """
+        """Run the user's prompt through the LLM and stream the response to TTS."""
         base_prompt = prompt
         context = self.conversation_context.get_context()
         provider_context = self.context_provider_registry.gather(
@@ -280,31 +146,24 @@ class VoiceAssistant:
 
         self.convo.append({"role": "user", "content": prompt})
 
-        response_generator = self.stream_chat_with_tools(self.convo)
-
         full_response_text = ""
 
-        def text_accumulator(generator):
+        def speakable_chunks():
             nonlocal full_response_text
-            for chunk in generator:
+            for chunk in self.tool_loop.stream(self.convo):
                 full_response_text += chunk
                 yield chunk
 
-        self.tts_provider.stream_speak(text_accumulator(response_generator))
+        self.tts_provider.stream_speak(speakable_chunks())
 
         self.conversation_context.add_exchange(base_prompt, full_response_text)
         return full_response_text
 
     def speak(self, text: str) -> None:
-        """Speak text using the configured TTS provider with fallback.
-
-        Args:
-            text: The text to speak
-        """
+        """Speak text using the configured TTS provider with fallback to OpenAI."""
         if self.tts_provider.speak(text):
             return
 
-        # Fallback to OpenAI TTS if primary provider fails
         if TTS_PROVIDER != "openai":
             log("Falling back to OpenAI TTS.", title="TTS", style="bold yellow")
             from .providers.tts.openai_tts import OpenAITTSProvider
@@ -312,58 +171,60 @@ class VoiceAssistant:
                 fallback = OpenAITTSProvider()
                 if fallback.speak(text):
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001 - fallback is best-effort
                 pass
 
         log("Unable to synthesise speech for the assistant response.", title="TTS", style="bold red")
 
     def callback(self, recognizer: sr.Recognizer, audio: sr.AudioData) -> None:
-        """Audio callback for background listening.
-
-        Args:
-            recognizer: The speech recognizer
-            audio: The audio data
-        """
-        import io
+        """Audio callback for background listening."""
         wav_data = io.BytesIO(audio.get_wav_data())
         prompt_text = wav_to_text(wav_data)
         log(f"Heard: {prompt_text!r}", title="DEBUG", style="dim")
         clean_prompt = extract_prompt(prompt_text, WAKE_WORD)
 
-        if clean_prompt:
-            log(f"USER: {clean_prompt}", title="USER INPUT", style="bold green")
+        if not clean_prompt:
+            return
 
-            if clean_prompt.lower().startswith("remember "):
-                self.conversation_context.remember(clean_prompt[9:])
-                response = "I've remembered that information."
-            elif clean_prompt.lower() == "forget context":
-                response = self.conversation_context.forget()
-            elif clean_prompt.lower().startswith("search "):
-                search_query = clean_prompt[7:]
-                search_results = duckduckgo_search(search_query)
-                processed_results = process_search_results(search_results)
-                response = self.llm_prompt(
-                    prompt=(
-                        "Based on the following search results, answer the query: "
-                        f"{search_query}\n\n{processed_results}"
-                    ),
-                    img_context=None,
-                )
-            else:
-                response = self.llm_prompt(prompt=clean_prompt, img_context=None)
+        log(f"USER: {clean_prompt}", title="USER INPUT", style="bold green")
+        response = self._handle_command(clean_prompt)
+        log(f"ASSISTANT: {response}", title="ASSISTANT RESPONSE", style="bold magenta")
 
-            log(f"ASSISTANT: {response}", title="ASSISTANT RESPONSE", style="bold magenta")
-            # self.speak(response) # handled inside llm_prompt for streaming
+    def _handle_command(self, clean_prompt: str) -> str:
+        """Route a recognised prompt to memory commands, search, or the LLM."""
+        lowered = clean_prompt.lower()
+        if lowered.startswith("remember "):
+            self.conversation_context.remember(clean_prompt[9:])
+            return "I've remembered that information."
+        if lowered == "forget context":
+            return self.conversation_context.forget()
+        if lowered.startswith("search "):
+            search_query = clean_prompt[7:]
+            search_results = duckduckgo_search(search_query)
+            processed_results = process_search_results(search_results)
+            return self.llm_prompt(
+                prompt=(
+                    "Based on the following search results, answer the query: "
+                    f"{search_query}\n\n{processed_results}"
+                ),
+                img_context=None,
+            )
+        return self.llm_prompt(prompt=clean_prompt, img_context=None)
 
     def start_listening(self) -> None:
         """Start the background listening loop."""
         log("Adjusting for ambient noise...", title="ACTION", style="bold blue")
-        # Increase pause threshold so "Nova, how are you?" stays in one chunk
-        self.recognizer.pause_threshold = 1.5  # seconds of silence before phrase is considered complete
-        self.recognizer.phrase_threshold = 0.3  # minimum seconds of speech to consider
+        self.recognizer.pause_threshold = 1.5
+        self.recognizer.phrase_threshold = 0.3
         with sr.Microphone() as source:
             self.recognizer.adjust_for_ambient_noise(source, duration=2)
-            console.print(Panel(f"Say '{WAKE_WORD}' followed with your prompt.", border_style="bold magenta", title="INSTRUCTIONS"))
+            console.print(
+                Panel(
+                    f"Say '{WAKE_WORD}' followed with your prompt.",
+                    border_style="bold magenta",
+                    title="INSTRUCTIONS",
+                )
+            )
 
         stop_listening = self.recognizer.listen_in_background(sr.Microphone(), self.callback)
         try:

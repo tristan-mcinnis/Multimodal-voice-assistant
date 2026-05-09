@@ -1,4 +1,5 @@
 openai>=1.40.0
+python-dotenv>=1.0.0
 Pillow
 faster-whisper
 SpeechRecognition
@@ -15,3 +16,4 @@ sounddevice
 # Optional dependencies:
 # pip install kokoro-tts kokoro-onnx  # for local Kokoro TTS with streaming support
 # pip install anthropic               # for Claude LLM provider
+# DeepSeek uses the standard `openai` SDK with a custom base_url.

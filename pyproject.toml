@@ -27,6 +27,7 @@ classifiers = [
 
 dependencies = [
     "openai>=1.40.0",
+    "python-dotenv>=1.0.0",
     "faster-whisper",
     "SpeechRecognition",
     "pyaudio",
